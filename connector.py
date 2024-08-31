@@ -29,7 +29,7 @@ class Connector:
                                          trusted_connection=trusted_connection,
                                          trustservercertificate=trust_server_certificate)
         self.cursor = self.connection.cursor()
-        self.db_name = db_name
+        self.set_database()
 
     def __del__(self):
 
@@ -130,6 +130,7 @@ class Connector:
             os.makedirs('Database')
 
         for table_schema, table_name in tables_list:
+            # Get column list
             col_list = list()
             col_query = f'''
             SELECT COLUMN_NAME, DATA_TYPE
@@ -141,45 +142,64 @@ class Connector:
             for column_name, data_type in self.cursor:
                 col_list.append([column_name, data_type])
 
+            # Get Primary key of the table for sorting
+            pk_query = f'''
+            SELECT COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = '{table_schema}'
+            AND TABLE_NAME = '{table_name}'
+            AND ORDINAL_POSITION = 1
+            '''
+            self.cursor.execute(pk_query)
+            primary_key = str()
+            for row in self.cursor:
+                primary_key = row[0]
+
+            # Prepare queries and DataFrame
             df = pd.DataFrame()
             for column, data_type in col_list:
+
+                # Ignore rowguid and ModifiedDate columns for every table
                 if column in ['rowguid', 'ModifiedDate']:
                     continue
 
+                # If Column has geographical data, store latitude and longitude as a pair
                 elif data_type == 'geography':
                     query = f'''
                     SELECT {column}.Lat, {column}.Long
                     FROM {table_schema}.{table_name}
+                    ORDER BY {primary_key};
                     '''
 
                     result_list = list()
-                    print(table_schema, table_name, column)
                     self.cursor.execute(query)
                     for lat, long in self.cursor:
                         result_list.append([lat, long])
                     df[column] = pd.Series(result_list)
 
+                # If Column has hierarchy id stored, convert to string and store in DataFrame
                 elif data_type == 'hierarchyid':
                     query = f'''
                     SELECT "{column}".ToString()
                     FROM {table_schema}.{table_name}
+                    ORDER BY {primary_key};
                     '''
 
                     result_list = list()
-                    print(table_schema, table_name, column)
                     self.cursor.execute(query)
                     for row in self.cursor:
                         result_list.append(row[0])
                     df[column] = pd.Series(result_list)
 
+                # For all other data types of Column, store the data as is
                 else:
                     query = f'''
                     SELECT "{column}"
                     FROM {table_schema}.{table_name}
+                    ORDER BY {primary_key};
                     '''
 
                     result_list = list()
-                    print(table_schema, table_name, column)
                     self.cursor.execute(query)
                     for row in self.cursor:
                         result_list.append(row[0])
@@ -189,3 +209,59 @@ class Connector:
                 print(df.head())
 
             df.to_csv(f"Database/{table_schema}.{table_name}.csv", index=False)
+
+    def read_table_csv(self, table_schema: str, table_name: str) -> pd.DataFrame:
+        """
+        Read data of <TABLE_SCHEMA>.<TABLE_NAME> from the files exported to Database folder
+        :param table_schema:
+        :param table_name:
+        :return: Dataframe of the table specified
+        """
+        return pd.read_csv(f"Database/{table_schema}.{table_name}.csv")
+
+    def inner_join_tables(self, tables: list, join_column: str, col_list: list) -> pd.DataFrame:
+        """
+        Inner join 2 tables
+        :param tables: List of tables in the form of "Schema.Table"
+        :param join_column: Column at which join occurs
+        :param col_list: List of columns to be printed
+        :return: Returns DataFrame of the Query result. Returns blank DataFrame if no columns selected by col_list
+        """
+        columns = str()
+        if col_list is None:
+            columns = "*"
+        else:
+            for column in col_list:
+                if column == join_column:
+                    columns += "a." + column + ", "
+                else:
+                    columns += column + ", "
+
+            columns = columns[:-2]
+
+        table1 = tables[0]
+        table2 = tables[1]
+        query = f'''
+        SELECT {columns}
+        FROM {table1} AS a
+        INNER JOIN {table2} as b
+        ON a.{join_column} = b.{join_column}
+        ORDER BY a.{join_column};
+        '''
+
+        print(query)
+        self.cursor.execute(query)
+        df_base = dict()
+        for column in col_list:
+            df_base[column] = list()
+        for row in self.cursor:
+            print(row)
+            if col_list is None:
+                return pd.DataFrame(df_base)
+            else:
+                i = 0
+                for column in col_list:
+                    df_base[column].append(row[i])
+                    i += 1
+
+        return pd.DataFrame(df_base)
