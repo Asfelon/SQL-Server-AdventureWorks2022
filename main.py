@@ -1,6 +1,4 @@
 from connector import Connector
-import pandas as pd
-import os
 
 
 connector = Connector()
